@@ -42,3 +42,5 @@ def hitung_kolektibilitas_ojk(pd_value, hari_tunggakan):
     kol_label, decision, color, desc = mapping[final_kol]
     
     return final_kol, kol_label, decision, color, desc
+
+    __all__ = ["hitung_kolektibilitas_ojk"]
