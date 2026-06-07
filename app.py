@@ -1,6 +1,7 @@
 """
 NexBank Credit Decision Engine
 Menggunakan Model XGBoost dari PyCaret (AUC: 0.9785)
+beserta integrasi Business Rules (OJK Collectibility)
 """
 
 import streamlit as st
@@ -9,9 +10,12 @@ import os
 import time
 import plotly.graph_objects as go
 
-# Memanggil modul-modul dari folder src/
+# --- IMPORT MODULE LOKAL SELALU DI LUAR TRY-EXCEPT ---
+# Agar sistem Fallback selalu kenal dengan fungsi-fungsi ini
 from src.rules import hitung_kolektibilitas_ojk
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from src.preprocessing import DataPreprocessor
+from src.modeling import CreditRiskModel
 
 # Import PyCaret untuk load model
 try:
@@ -19,10 +23,7 @@ try:
     PYCARET_AVAILABLE = True
 except ImportError:
     PYCARET_AVAILABLE = False
-
-# Fallback model dan preprocessor selalu diimport agar dapat digunakan jika PyCaret gagal
-from src.preprocessing import DataPreprocessor
-from src.modeling import CreditRiskModel
+ 
 
 st.set_page_config(page_title="Credit Risk Analysis System", page_icon="🏦", layout="wide")
 
@@ -111,19 +112,22 @@ if model_data is None:
 with st.sidebar:
     st.header("📝 Form Input Data")
     app_name = st.text_input("Nama Aplikan", value="Andi")
-    age = st.number_input("Umur (Tahun)", min_value=18, max_value=100, value=25)
-    income = st.number_input("Pendapatan Tahunan ($)", min_value=1000, value=50000, step=1000)
+    age = st.number_input("Umur (Tahun)", min_value=18, max_value=100, value=30)
+    gender = st.selectbox("Jenis Kelamin", ["male", "female"])
+    education = st.selectbox("Pendidikan", ["High School", "Associate", "Bachelor", "Master", "Doctorate"], index=2)
+    income = st.number_input("Pendapatan Tahunan ($)", min_value=1000, value=70000, step=1000)
     loan_intent = st.selectbox("Tujuan Pinjaman", ["PERSONAL", "EDUCATION", "MEDICAL", "VENTURE", "HOMEIMPROVEMENT", "DEBTCONSOLIDATION"])
-    loan_amount = st.number_input("Jumlah Pinjaman ($)", min_value=1000, value=20000, step=1000)
-    loan_int_rate = st.number_input("Suku Bunga (%)", min_value=1.0, value=15.0, step=0.1)
+    loan_amount = st.number_input("Jumlah Pinjaman ($)", min_value=1000, value=8000, step=1000)
+    loan_int_rate = st.number_input("Suku Bunga (%)", min_value=1.0, value=11.0, step=0.1)
 
     st.markdown("---")
     st.subheader("Data Tambahan")
-    emp_length = st.number_input("Lama Bekerja (Tahun)", min_value=0, max_value=50, value=3)
-    home_ownership = st.selectbox("Status Kepemilikan Rumah", ["RENT", "OWN", "MORTGAGE"])
-    credit_score = st.number_input("Skor Kredit", min_value=300, max_value=850, value=650)
+    emp_length = st.number_input("Lama Bekerja (Tahun)", min_value=0, max_value=50, value=5)
+    home_ownership = st.selectbox("Status Kepemilikan Rumah", ["RENT", "OWN", "MORTGAGE"], index=2)
+    credit_score = st.number_input("Skor Kredit", min_value=300, max_value=850, value=640)
     hari_tunggakan = st.number_input("Riwayat Tunggakan (Hari)", min_value=0, value=0)
-    durasi_kredit = st.number_input("Durasi Histori Kredit (Tahun)", min_value=0, value=4)
+    durasi_kredit = st.number_input("Durasi Histori Kredit (Tahun)", min_value=0, value=6)
+    riwayat_default = st.selectbox("Pernah Gagal Bayar Sebelumnya?", ["No", "Yes"])
 
     analyze_btn = st.button("🚀 Jalankan Analisis", type="primary", use_container_width=True)
 
@@ -139,6 +143,8 @@ if analyze_btn:
 
         # Timpa nilainya satu per satu HANYA JIKA kolomnya ada
         if 'person_age' in input_raw.columns: input_raw['person_age'] = age
+        if 'person_gender' in input_raw.columns: input_raw['person_gender'] = gender
+        if 'person_education' in input_raw.columns: input_raw['person_education'] = education
         if 'person_income' in input_raw.columns: input_raw['person_income'] = income
 
         # Mengatasi nama kolom pengalaman kerja yang berbeda
@@ -153,11 +159,11 @@ if analyze_btn:
         if 'cb_person_cred_hist_length' in input_raw.columns: input_raw['cb_person_cred_hist_length'] = durasi_kredit
         if 'credit_score' in input_raw.columns: input_raw['credit_score'] = credit_score
 
-        # Mengatasi kolom riwayat gagal bayar
+        # Mengatasi kolom riwayat gagal bayar (mengambil dari input form)
         if 'cb_person_default_on_file' in input_raw.columns:
-            input_raw['cb_person_default_on_file'] = 'Y' if hari_tunggakan > 0 else 'N'
+            input_raw['cb_person_default_on_file'] = 'Y' if riwayat_default == 'Yes' else 'N'
         elif 'previous_loan_defaults_on_file' in input_raw.columns:
-            input_raw['previous_loan_defaults_on_file'] = 'Yes' if hari_tunggakan > 0 else 'No'
+            input_raw['previous_loan_defaults_on_file'] = riwayat_default
 
         # PREDIKSI berdasarkan tipe model
         try:
@@ -169,7 +175,7 @@ if analyze_btn:
                 elif 'prediction_score' in predictions.columns:
                     pd_value = predictions['prediction_score'].values[0]
                 else:
-                    pd_value = 0.5 if predictions['prediction_label'].values[0] == 1 else 0.1
+                    pd_value = 0.5 if predictions.get('prediction_label', pd.Series([0])).values[0] == 1 else 0.1
             else:
                 preprocessor, ml_model = model_data
                 input_processed = preprocessor.transform(input_raw)
@@ -186,7 +192,7 @@ if analyze_btn:
         expected_loss = loan_amount * pd_value * lgd_rate
 
         # Evaluasi historis tunggakan dan kolektibilitas OJK
-        final_kol, kol_label, kol_decision, kol_color, kol_desc = hitung_kolektibilitas_ojk(pd_value, hari_tunggakan)
+        final_kol, kol_label, kol_decision, kol_color, kol_desc = hitung_kolektibilitas_ojk(pd_value, hari_tunggakan, riwayat_default)
         history_status = "Nasabah memiliki rekam jejak tunggakan kredit historis." if hari_tunggakan > 0 else "Tidak ada riwayat tunggakan kredit historis."
 
         # --- 4. TATA LETAK HASIL ---

@@ -1,9 +1,23 @@
-def hitung_kolektibilitas_ojk(pd_value, hari_tunggakan):
+def hitung_kolektibilitas_ojk(pd_value, hari_tunggakan, riwayat_default='No'):
     """
     Fungsi Diskrit untuk mengelompokkan risiko ke dalam 5 tingkatan Kolektibilitas (Kol).
-    Menggabungkan historis (fakta tunggakan) dan prediktif (Machine Learning).
+    Menggabungkan historis (fakta tunggakan), kebijakan bank (riwayat masa lalu), dan prediktif (Machine Learning).
     """
-    # 1. Tentukan Skor Historis (Aturan Baku BI/OJK)
+    # 1. Validasi Input (Keamanan Sistem)
+    if not (0.0 <= pd_value <= 1.0):
+        raise ValueError("Probabilitas Default (PD) harus berada di rentang 0.0 - 1.0")
+
+    # 2. Kebijakan Internal Bank (Blacklist Otomatis)
+    # Jika punya riwayat hitam, langsung tolak tanpa perlu hitung probabilitas
+    if str(riwayat_default).strip().upper() == 'YES':
+        return (
+            "Kol 5 (Macet) - BLACKLIST", 
+            "⛔ REJECTED", 
+            "error", 
+            "Ditolak otomatis: Nasabah memiliki riwayat gagal bayar di masa lalu sesuai kebijakan bank."
+        )
+
+    # 3. Tentukan Skor Historis (Aturan Baku BI/OJK)
     if hari_tunggakan > 180:
         kol_hist = 5  # Macet
     elif hari_tunggakan > 120:
@@ -15,32 +29,43 @@ def hitung_kolektibilitas_ojk(pd_value, hari_tunggakan):
     else:
         kol_hist = 1  # Lancar
 
-    # 2. Tentukan Skor Prediksi AI (Mencegah nasabah yang kelihatannya lancar tapi berisiko tinggi)
-    if pd_value >= 0.50:
+    # 4. Tentukan Skor Prediksi AI (Risk Appetite Thresholds)
+    # Batas ambang risiko ini bisa disesuaikan dengan kebijakan ekonomi bank
+    # Disesuaikan dengan distribusi aktual: base rate default ~22% di dataset
+    # Menggunakan kalibrasi yang lebih realistis untuk Random Forest dengan class_weight='balanced'
+    THRESHOLDS = {
+        'MACET': 0.80,        # PD >= 80% → Macet (sangat tinggi)
+        'DIRAGUKAN': 0.65,    # PD >= 65% → Diragukan (tinggi)
+        'KURANG_LANCAR': 0.50, # PD >= 50% → Kurang Lancar (menengah-tinggi)
+        'DPK': 0.40           # PD >= 40% → Dalam Perhatian Khusus (menengah)
+    }
+
+    if pd_value >= THRESHOLDS['MACET']:
         kol_ai = 5
-    elif pd_value >= 0.30:
+    elif pd_value >= THRESHOLDS['DIRAGUKAN']:
         kol_ai = 4
-    elif pd_value >= 0.15:
+    elif pd_value >= THRESHOLDS['KURANG_LANCAR']:
         kol_ai = 3
-    elif pd_value >= 0.08:
+    elif pd_value >= THRESHOLDS['DPK']:
         kol_ai = 2
     else:
         kol_ai = 1
 
-    # 3. KEPUTUSAN FINAL: Bank mengambil skor terburuk demi mitigasi risiko (Conservative Approach)
+    # 5. KEPUTUSAN FINAL: Pendekatan Konservatif
     final_kol = max(kol_hist, kol_ai)
 
-    # 4. Kamus Pemetaan Output untuk Dashboard (UI)
+    # 6. Kamus Pemetaan Output
     mapping = {
         1: ("Kol 1 (Lancar)", "🟢 APPROVED", "success", "Tidak ada tunggakan berjalan, profil risiko AI sangat rendah."),
         2: ("Kol 2 (Dalam Perhatian Khusus)", "🟡 CONDITIONAL APPROVAL", "warning", "Terdapat riwayat tunggakan 1-90 hari atau peringatan risiko menengah dari AI."),
-        3: ("Kol 3 (Kurang Lancar)", "🟠 REJECTED", "error", "Tunggakan 91-120 hari. Nasabah memerlukan penanganan khusus / restrukturisasi."),
-        4: ("Kol 4 (Diragukan)", "🔴 REJECTED", "error", "Tunggakan 121-180 hari. Sangat berisiko, peluang gagal bayar tinggi."),
-        5: ("Kol 5 (Macet)", "⛔ REJECTED", "error", "Tunggakan > 180 hari. Kredit macet total, masuk dalam blacklist (NPL).")
+        3: ("Kol 3 (Kurang Lancar)", "🟠 REJECTED", "error", "Tunggakan 91-120 hari atau profil risiko AI tinggi (Ditolak)."),
+        4: ("Kol 4 (Diragukan)", "🔴 REJECTED", "error", "Tunggakan 121-180 hari atau profil risiko AI sangat tinggi (Ditolak)."),
+        5: ("Kol 5 (Macet)", "⛔ REJECTED", "error", "Nasabah terindikasi macet permanen secara historis atau dari tebakan AI.")
     }
 
-    kol_label, decision, color, desc = mapping[final_kol]
-    
+    kol_label, decision, color, desc = mapping.get(final_kol, ("Tidak Diketahui", "⚠️ ERROR", "error", "Terjadi kesalahan pada sistem pemetaan kolektibilitas."))
+
     return final_kol, kol_label, decision, color, desc
+
 
 __all__ = ["hitung_kolektibilitas_ojk"]
