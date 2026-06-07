@@ -43,4 +43,4 @@ def hitung_kolektibilitas_ojk(pd_value, hari_tunggakan):
     
     return final_kol, kol_label, decision, color, desc
 
-    __all__ = ["hitung_kolektibilitas_ojk"]
+__all__ = ["hitung_kolektibilitas_ojk"]
