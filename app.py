@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 
 # Memanggil modul-modul dari folder src/
 from src.rules import hitung_kolektibilitas_ojk
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 
 # Import PyCaret untuk load model
 try:
@@ -18,9 +19,10 @@ try:
     PYCARET_AVAILABLE = True
 except ImportError:
     PYCARET_AVAILABLE = False
-    # Fallback ke model lama jika PyCaret tidak tersedia
-    from src.preprocessing import DataPreprocessor
-    from src.modeling import CreditRiskModel
+
+# Fallback model dan preprocessor selalu diimport agar dapat digunakan jika PyCaret gagal
+from src.preprocessing import DataPreprocessor
+from src.modeling import CreditRiskModel
 
 st.set_page_config(page_title="Credit Risk Analysis System", page_icon="🏦", layout="wide")
 
@@ -29,26 +31,7 @@ st.set_page_config(page_title="Credit Risk Analysis System", page_icon="🏦", l
 def load_system():
     """Load model PyCaret atau fallback ke Random Forest manual"""
 
-    # Coba load model PyCaret terlebih dahulu
-    if PYCARET_AVAILABLE and os.path.exists("models/best_pycaret_model.pkl"):
-        try:
-            model = load_model('models/best_pycaret_model')
-
-            # Load dataset untuk template
-            file_path = "loan_data.csv"
-            if not os.path.exists(file_path) and os.path.exists("data/loan_data.csv"):
-                file_path = "data/loan_data.csv"
-
-            df = pd.read_csv(file_path)
-            df = df.dropna(subset=['loan_status'])
-            X = df.drop('loan_status', axis=1)
-            template_df = X.iloc[[0]].copy()
-
-            return model, template_df, "PyCaret", "Sistem Siap! (Model: XGBoost - AUC 0.9785)"
-        except Exception as e:
-            st.warning(f"Gagal load model PyCaret: {e}. Menggunakan Random Forest manual...")
-
-    # Fallback: Train Random Forest manual
+    # Cari dataset untuk template dan evaluasi
     file_path = "loan_data.csv"
     if not os.path.exists(file_path) and os.path.exists("data/loan_data.csv"):
         file_path = "data/loan_data.csv"
@@ -57,20 +40,62 @@ def load_system():
         df = pd.read_csv(file_path)
         df = df.dropna(subset=['loan_status'])
     except FileNotFoundError:
-        return None, None, None, "File loan_data.csv tidak ditemukan!"
+        return None, None, None, "File loan_data.csv tidak ditemukan!", None
 
     X = df.drop('loan_status', axis=1)
+    y = df['loan_status']
     template_df = X.iloc[[0]].copy()
 
+    # Coba load model PyCaret terlebih dahulu
+    if PYCARET_AVAILABLE and os.path.exists("models/best_pycaret_model.pkl"):
+        try:
+            model = load_model('models/best_pycaret_model')
+            predictions = predict_model(model, data=X)
+
+            if 'prediction_label' in predictions.columns:
+                y_pred = predictions['prediction_label']
+            elif 'Label' in predictions.columns:
+                y_pred = predictions['Label']
+            else:
+                y_pred = predictions.iloc[:, -1]
+
+            if 'prediction_score_1' in predictions.columns:
+                y_prob = predictions['prediction_score_1']
+            elif 'prediction_score' in predictions.columns:
+                y_prob = predictions['prediction_score']
+            else:
+                y_prob = y_pred.astype(float)
+
+            metrics_info = {
+                'algorithm': 'XGBoost (PyCaret)',
+                'accuracy': accuracy_score(y, y_pred),
+                'roc_auc': roc_auc_score(y, y_prob),
+                'report': classification_report(y, y_pred, target_names=["Lancar (0)", "Gagal Bayar (1)"])
+            }
+            print("\n" + "="*50)
+            print("EVALUASI MODEL PYCARET")
+            print(f"Algoritma: {metrics_info['algorithm']}")
+            print(f"Akurasi: {metrics_info['accuracy']:.4f}")
+            print(f"ROC AUC: {metrics_info['roc_auc']:.4f}")
+            print(metrics_info['report'])
+            print("="*50 + "\n")
+
+            return model, template_df, "PyCaret", "Sistem Siap! (Model: XGBoost - AUC 0.9785)", metrics_info
+        except Exception as e:
+            st.warning(f"Gagal load model PyCaret: {e}. Menggunakan Random Forest manual...")
+
+    # Fallback: Train Random Forest manual
     preprocessor = DataPreprocessor()
-    X_processed, y = preprocessor.fit_transform(df)
+    X_processed, y_processed = preprocessor.fit_transform(df)
 
     model = CreditRiskModel()
-    model.train(X_processed, y)
+    model.train(X_processed, y_processed)
+    metrics_info = model.get_metrics()
 
-    return (preprocessor, model), template_df, "RandomForest", "Sistem Siap! (Model: Random Forest Manual)"
+    return (preprocessor, model), template_df, "RandomForest", "Sistem Siap! (Model: Random Forest Manual)", metrics_info
 
-model_data, template_df, model_type, status_msg = load_system()
+
+model_data, template_df, model_type, status_msg, metrics_info = load_system()
 
 # --- 2. TAHAP UI & INPUT DASHBOARD ---
 st.title("🏦 Credit Risk Analysis System")
@@ -135,24 +160,23 @@ if analyze_btn:
             input_raw['previous_loan_defaults_on_file'] = 'Yes' if hari_tunggakan > 0 else 'No'
 
         # PREDIKSI berdasarkan tipe model
-        if model_type == "PyCaret":
-            # PyCaret model: gunakan predict_model
-            predictions = predict_model(model_data, data=input_raw)
+        try:
+            if model_type == "PyCaret":
+                predictions = predict_model(model_data, data=input_raw)
 
-            # Ambil probabilitas untuk kelas 1 (Gagal Bayar)
-            if 'prediction_score_1' in predictions.columns:
-                pd_value = predictions['prediction_score_1'].values[0]
-            elif 'prediction_score' in predictions.columns:
-                pd_value = predictions['prediction_score'].values[0]
+                if 'prediction_score_1' in predictions.columns:
+                    pd_value = predictions['prediction_score_1'].values[0]
+                elif 'prediction_score' in predictions.columns:
+                    pd_value = predictions['prediction_score'].values[0]
+                else:
+                    pd_value = 0.5 if predictions['prediction_label'].values[0] == 1 else 0.1
             else:
-                # Fallback: gunakan prediction label
-                pd_value = 0.5 if predictions['prediction_label'].values[0] == 1 else 0.1
-
-        else:
-            # Random Forest manual
-            preprocessor, ml_model = model_data
-            input_processed = preprocessor.transform(input_raw)
-            pd_value = ml_model.predict_default_prob(input_processed)
+                preprocessor, ml_model = model_data
+                input_processed = preprocessor.transform(input_raw)
+                pd_value = ml_model.predict_default_prob(input_processed)
+        except Exception as e:
+            st.error(f"Gagal memproses prediksi: {e}")
+            st.stop()
 
         pd_value = max(0.01, min(pd_value, 0.99))
         pd_percent = pd_value * 100
@@ -161,16 +185,9 @@ if analyze_btn:
         lgd_rate = 0.45
         expected_loss = loan_amount * pd_value * lgd_rate
 
-        # Logika Keputusan berdasarkan Ambang Batas 15%
-        if pd_percent < 15.0:
-            decision = "APPROVED"
-            decision_color = "success"
-        elif pd_percent < 30.0:
-            decision = "CONDITIONAL APPROVAL"
-            decision_color = "warning"
-        else:
-            decision = "REJECTED"
-            decision_color = "error"
+        # Evaluasi historis tunggakan dan kolektibilitas OJK
+        final_kol, kol_label, kol_decision, kol_color, kol_desc = hitung_kolektibilitas_ojk(pd_value, hari_tunggakan)
+        history_status = "Nasabah memiliki rekam jejak tunggakan kredit historis." if hari_tunggakan > 0 else "Tidak ada riwayat tunggakan kredit historis."
 
         # --- 4. TATA LETAK HASIL ---
         st.markdown("### Detail Aplikan")
@@ -187,12 +204,12 @@ if analyze_btn:
         </div>
         """, unsafe_allow_html=True)
 
-        if decision_color == "success":
-            st.success(f"**Rekomendasi: {decision}**")
-        elif decision_color == "warning":
-            st.warning(f"**Rekomendasi: {decision}**")
+        if kol_color == "success":
+            st.success(f"**Rekomendasi: {kol_decision}**")
+        elif kol_color == "warning":
+            st.warning(f"**Rekomendasi: {kol_decision}**")
         else:
-            st.error(f"**Rekomendasi: {decision}**")
+            st.error(f"**Rekomendasi: {kol_decision}**")
 
         col_text, col_chart = st.columns([1, 1])
 
@@ -200,6 +217,10 @@ if analyze_btn:
             st.markdown("<br><br>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color: #c0392b;'>Potensi Kerugian (Expected Loss): ${expected_loss:,.2f}</h3>", unsafe_allow_html=True)
             st.markdown(f"**Probabilitas Gagal Bayar (PD): {pd_percent:.2f}%**")
+            st.markdown(f"**Kolektibilitas OJK:** {kol_label}")
+            st.markdown(f"**Status Riwayat Gagal Bayar:** {'Ya' if hari_tunggakan > 0 else 'Tidak'}")
+            st.markdown(f"**Ringkasan Analisis:** {kol_desc}")
+            st.markdown(f"*{history_status}*")
 
         with col_chart:
             fig = go.Figure(go.Indicator(
@@ -225,11 +246,31 @@ if analyze_btn:
             fig.update_layout(height=300, margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-        ambang_batas = 15.0
-        status_ambang = "di bawah" if pd_percent < ambang_batas else "di atas"
-        keputusan_akhir = "Disetujui (Approved)" if pd_percent < ambang_batas else "Ditolak / Syarat Khusus"
+        history_label = "Ya" if hari_tunggakan > 0 else "Tidak"
+        history_color = "rgba(231, 76, 60, 0.8)" if hari_tunggakan > 0 else "rgba(46, 204, 113, 0.8)"
+        history_text = "Nasabah memiliki riwayat gagal bayar." if hari_tunggakan > 0 else "Tidak ada riwayat gagal bayar."
 
-        st.info(f"Aplikan bernama **{app_name}** memiliki probabilitas gagal bayar sebesar **{pd_percent:.2f}%**, yang berada {status_ambang} ambang batas {ambang_batas}%. Dengan demikian, pinjaman **{keputusan_akhir}**.")
+        st.markdown("### 📌 Visualisasi Riwayat Pembayaran")
+        st.markdown(f"**Pernah gagal bayar:** {history_label}")
+        st.markdown(f"**Detail riwayat:** {history_text}")
+
+        history_fig = go.Figure(go.Bar(
+            x=['Tunggakan Kredit'],
+            y=[hari_tunggakan],
+            marker_color=history_color,
+            text=[f"{hari_tunggakan} hari"],
+            textposition='auto'
+        ))
+        history_fig.update_layout(
+            yaxis_title='Hari Tunggakan',
+            yaxis=dict(range=[0, max(hari_tunggakan, 30)]),
+            margin=dict(l=20, r=20, t=20, b=20),
+            height=260
+        )
+        st.plotly_chart(history_fig, use_container_width=True)
+
+        final_text = "Disetujui" if kol_color == "success" else "Syarat Khusus" if kol_color == "warning" else "Ditolak"
+        st.info(f"Aplikan bernama **{app_name}** memiliki probabilitas gagal bayar sebesar **{pd_percent:.2f}%** dan masuk ke {kol_label}. Dengan demikian, pinjaman **{final_text}**.")
 
 else:
     st.write("Silakan isi form di *Sidebar* sebelah kiri dan klik **Jalankan Analisis** untuk melihat detail profil risiko nasabah.")

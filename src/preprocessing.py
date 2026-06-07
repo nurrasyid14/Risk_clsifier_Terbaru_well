@@ -4,16 +4,19 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
+from src.balancer import smote, tomek_links, smote_tomek, smote_enn
+
 class DataPreprocessor:
     """
     Kelas Modular untuk membersihkan dan mentransformasi data mentah
     menjadi format yang bisa dibaca oleh algoritma Machine Learning.
     Kini dilengkapi dengan fitur pembersihan anomali data otomatis saat training.
     """
-    def __init__(self):
+    def __init__(self, balance_method: str = "smote_tomek"):
         self.preprocessor = None
         self.numeric_features = []
         self.categorical_features = []
+        self.balance_method = balance_method
 
     def fit_transform(self, df):
         """
@@ -72,7 +75,21 @@ class DataPreprocessor:
 
         # Eksekusi pemrosesan data X
         X_processed = self.preprocessor.fit_transform(X)
-        
+
+        # Pastikan output bukan sparse sebelum balancing
+        if hasattr(X_processed, 'toarray'):
+            X_processed = X_processed.toarray()
+
+        # --- TAHAP 3: BALANCING DATA ---
+        if self.balance_method == "smote":
+            X_processed, y = smote(X_processed, y)
+        elif self.balance_method == "tomek_links":
+            X_processed, y = tomek_links(X_processed, y)
+        elif self.balance_method == "smote_tomek":
+            X_processed, y = smote_tomek(X_processed, y)
+        elif self.balance_method == "smote_enn":
+            X_processed, y = smote_enn(X_processed, y)
+
         return X_processed, y
 
     def transform(self, df_input):

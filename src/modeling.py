@@ -1,7 +1,7 @@
 import os
 import joblib
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 
 class CreditRiskModel:
     """
@@ -19,6 +19,7 @@ class CreditRiskModel:
             random_state=random_state
         )
         self.default_class_index = 1
+        self.train_metrics = {}
 
     def train(self, X_processed, y):
         """Melatih model menggunakan data yang sudah di-preprocess."""
@@ -31,20 +32,34 @@ class CreditRiskModel:
         else:
             self.default_class_index = 0
             
-        # Tampilkan laporan performa sederhana di terminal sebagai feedback latihan model
         y_pred = self.model.predict(X_processed)
         y_prob = self.model.predict_proba(X_processed)[:, self.default_class_index]
+
+        report = classification_report(y, y_pred, target_names=["Lancar (0)", "Gagal Bayar (1)"])
+        roc_auc = roc_auc_score(y, y_prob)
+        accuracy = accuracy_score(y, y_pred)
+
+        self.train_metrics = {
+            'algorithm': 'Random Forest (Fallback)',
+            'accuracy': accuracy,
+            'roc_auc': roc_auc,
+            'report': report
+        }
         
         print("\n" + "="*50)
         print(" LAPORAN PERFORMA MODEL SAAT LATIHAN (TRAINING PERFORMANCE)")
         print("="*50)
-        print(classification_report(y, y_pred, target_names=["Lancar (0)", "Gagal Bayar (1)"]))
-        print(f"Skor ROC-AUC Latihan: {roc_auc_score(y, y_prob):.4f}")
+        print(report)
+        print(f"Skor ROC-AUC Latihan: {roc_auc:.4f}")
+        print(f"Akurasi Latihan: {accuracy:.4f}")
         print("="*50 + "\n")
 
     def predict_default_prob(self, X_input_processed):
         """Mengeluarkan probabilitas (persentase) risiko gagal bayar (PD)."""
         return self.model.predict_proba(X_input_processed)[0][self.default_class_index]
+
+    def get_metrics(self):
+        return self.train_metrics
 
     def save_model(self, file_path="models/credit_risk_rf_model.joblib"):
         """Menyimpan model terlatih ke disk agar bisa dimuat secara instan tanpa training ulang."""
